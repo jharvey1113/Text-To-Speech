@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class Reader — Local Voice</title>
+<style>
+  :root {
+    --ink: #14181d; --paper: #ffffff; --muted: #5a6472; --line: #d8dde4;
+    --accent: #0f5f5c; --sentence: #dff0ef;
+  }
+  [data-theme="cream"] {
+    --ink: #2c2620; --paper: #f7f1e4; --line: #ded3bd; --sentence: #e6ddc7;
+  }
+  [data-theme="dark"] {
+    --ink: #e9edf2; --paper: #14181d; --muted: #9aa5b3; --line: #2c343e;
+    --accent: #5fd3ce; --sentence: #1e2b32;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    flex: none; border-bottom: 1px solid var(--line); padding: .6rem 1rem;
+    display: flex; flex-wrap: wrap; gap: .5rem 1.1rem; align-items: center;
+  }
+  .brand { font-weight: 700; }
+  .grp { display: flex; align-items: center; gap: .4rem; font-size: .82rem; color: var(--muted); }
+  .grp label { white-space: nowrap; }
+  select, input[type=range] { accent-color: var(--accent); }
+  select {
+    font: inherit; font-size: .85rem; padding: .3rem .4rem; max-width: 16rem;
+    background: var(--paper); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 4px;
+  }
+  input[type=range] { width: 7rem; }
+  .val { font-variant-numeric: tabular-nums; min-width: 2.6rem; }
+  button {
+    font: inherit; font-size: .85rem; padding: .4rem .8rem;
+    border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+    border-radius: 5px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  [data-theme="dark"] button.go { color: #06201f; }
+
+  #bar {
+    flex: none; height: 3px; background: var(--line);
+  }
+  #barFill { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+
+  main {
+    flex: 1; overflow-y: auto; display: flex; justify-content: center;
+    padding: 2rem 1.5rem 5rem;
+  }
+  .pane { width: 100%; max-width: 60rem; }
+  textarea {
+    width: 100%; min-height: 55vh;
+    font-family: Georgia, serif; font-size: 1.05rem; line-height: 1.6;
+    padding: 1.2rem; background: var(--paper); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; resize: vertical;
+  }
+  .hint { color: var(--muted); font-size: .85rem; margin: .8rem 0 0; }
+  #read { font-family: Georgia, serif; font-size: 34px; line-height: 1.65; }
+  #read p { margin: 0 0 1em; }
+  .s { border-radius: 4px; padding: .06em 0; transition: background-color .12s; }
+  .s.on { background: var(--sentence); }
+  .s.pending { opacity: .45; }
+  footer {
+    flex: none; border-top: 1px solid var(--line); padding: .45rem 1rem;
+    font-size: .8rem; color: var(--muted);
+    display: flex; justify-content: space-between; gap: 1rem;
+  }
+  .warn { color: #b3261e; }
+  [data-theme="dark"] .warn { color: #ffb4ab; }
+  .hidden { display: none !important; }
+  @media (prefers-reduced-motion: reduce) { .s { transition: none; } }
+</style>
+</head>
+<body data-theme="light">
+
+<header>
+  <span class="brand">Class Reader</span>
+
+  <div class="grp">
+    <label for="voice">Voice</label>
+    <select id="voice" disabled></select>
+  </div>
+
+  <div class="grp">
+    <label for="rate">Speed</label>
+    <input type="range" id="rate" min="0.6" max="1.4" step="0.05" value="1">
+    <span class="val" id="rateVal">1.0x</span>
+  </div>
+
+  <div class="grp">
+    <label for="size">Size</label>
+    <input type="range" id="size" min="18" max="80" step="2" value="34">
+    <span class="val" id="sizeVal">34</span>
+  </div>
+
+  <div class="grp"><button id="theme">Theme</button></div>
+
+  <div class="grp" style="margin-left:auto">
+    <button id="edit" class="hidden">Edit text</button>
+    <button id="prepare" class="go" disabled>Prepare audio</button>
+    <button id="play" class="go hidden">Play</button>
+    <button id="pause" class="hidden">Pause</button>
+    <button id="stop" class="hidden">Stop</button>
+  </div>
+</header>
+
+<div id="bar"><div id="barFill"></div></div>
+
+<main>
+  <div class="pane" id="editPane">
+    <textarea id="input" placeholder="Paste a passage or short story here, then choose Prepare audio."></textarea>
+    <p class="hint">
+      The voice runs on this computer. The first visit downloads it once
+      (about 92 MB); after that it works without sending any text anywhere.
+      Prepare the audio before class, then Play is instant.
+    </p>
+  </div>
+  <div class="pane hidden" id="readPane"><div id="read"></div></div>
+</main>
+
+<footer>
+  <span id="status">Loading voice engine…</span>
+  <span id="note"></span>
+</footer>
+
+<audio id="player"></audio>
+
+<script type="module">
+import { KokoroTTS } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
+
+const $ = (id) => document.getElementById(id);
+const player = $('player');
+
+let tts = null;
+let sentences = [];   // [{text, el, url}]
+let idx = 0;
+let playing = false;
+
+// ---------- model ----------
+async function boot() {
+  const device = ('gpu' in navigator) ? 'webgpu' : 'wasm';
+  $('note').textContent = device === 'webgpu' ? 'WebGPU' : 'WASM (slower)';
+
+  try {
+    tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
+      dtype: device === 'webgpu' ? 'fp32' : 'q8',
+      device,
+      progress_callback: (p) => {
+        if (p.status === 'progress' && p.total) {
+          const pct = Math.round((p.loaded / p.total) * 100);
+          $('barFill').style.width = pct + '%';
+          $('status').textContent = 'Downloading voice engine — ' + pct + '%';
+        }
+      }
+    });
+  } catch (err) {
+    $('status').innerHTML = '<span class="warn">Could not load the voice engine: ' +
+      err.message + '. The model host may be blocked on this network.</span>';
+    return;
+  }
+
+  $('barFill').style.width = '0';
+  fillVoices();
+  $('voice').disabled = false;
+  $('prepare').disabled = false;
+  $('status').textContent = 'Ready';
+}
+
+function fillVoices() {
+  const sel = $('voice');
+  const all = tts.voices || {};
+  const ids = Object.keys(all).filter(id => {
+    const v = all[id];
+    return !v.language || /^en/i.test(v.language) || /^[ab]/.test(id);
+  });
+  (ids.length ? ids : Object.keys(all)).forEach(id => {
+    const v = all[id];
+    const o = document.createElement('option');
+    o.value = id;
+    o.textContent = (v && v.name) ? v.name : id;
+    sel.appendChild(o);
+  });
+  if (sel.querySelector('option[value="af_heart"]')) { sel.value = 'af_heart'; }
+}
+
+// ---------- text ----------
+function splitSentences(block) {
+  const raw = block.match(/[^.!?]+[.!?]*\s*/g) || [block];
+  const out = [];
+  raw.forEach(s => {
+    if (!s.trim()) { return; }
+    if (s.length > 320) {
+      const parts = s.match(/[^,]+,?\s*/g) || [s];
+      let buf = '';
+      parts.forEach(p => {
+        if ((buf + p).length > 320 && buf) { out.push(buf); buf = p; }
+        else { buf += p; }
+      });
+      if (buf.trim()) { out.push(buf); }
+    } else { out.push(s); }
+  });
+  return out;
+}
+
+function build(text) {
+  const read = $('read');
+  read.textContent = '';
+  sentences = [];
+  text.split(/\n\s*\n/).forEach(block => {
+    if (!block.trim()) { return; }
+    const p = document.createElement('p');
+    splitSentences(block.replace(/\s*\n\s*/g, ' ')).forEach(s => {
+      const span = document.createElement('span');
+      span.className = 's pending';
+      span.textContent = s;
+      p.appendChild(span);
+      sentences.push({ text: s.trim(), el: span, url: null });
+    });
+    read.appendChild(p);
+  });
+}
+
+// RawAudio exposes toBlob in the browser build; fall back to encoding the
+// float samples ourselves if a future version drops it.
+function toURL(audio) {
+  if (typeof audio.toBlob === 'function') {
+    return URL.createObjectURL(audio.toBlob());
+  }
+  const data = audio.audio, sr = audio.sampling_rate;
+  const buf = new ArrayBuffer(44 + data.length * 2);
+  const view = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) { view.setUint8(o + i, s.charCodeAt(i)); } };
+  str(0, 'RIFF'); view.setUint32(4, 36 + data.length * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, sr, true);
+  view.setUint32(28, sr * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  str(36, 'data'); view.setUint32(40, data.length * 2, true);
+  for (let i = 0; i < data.length; i++) {
+    const v = Math.max(-1, Math.min(1, data[i]));
+    view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+  }
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+
+// ---------- prepare ----------
+async function prepare() {
+  const text = $('input').value.trim();
+  if (!text) { $('status').textContent = 'Paste some text first.'; return; }
+
+  build(text);
+  $('editPane').classList.add('hidden');
+  $('readPane').classList.remove('hidden');
+  $('prepare').disabled = true;
+  $('voice').disabled = true;
+  $('edit').classList.add('hidden');
+
+  const voice = $('voice').value;
+  const t0 = Date.now();
+
+  for (let i = 0; i < sentences.length; i++) {
+    $('status').textContent = 'Preparing audio — ' + (i + 1) + ' of ' + sentences.length;
+    $('barFill').style.width = Math.round(((i) / sentences.length) * 100) + '%';
+    try {
+      const audio = await tts.generate(sentences[i].text, { voice, speed: 1 });
+      sentences[i].url = toURL(audio);
+      sentences[i].el.classList.remove('pending');
+    } catch (err) {
+      sentences[i].el.classList.remove('pending');
+      $('note').innerHTML = '<span class="warn">One sentence failed to generate.</span>';
+    }
+  }
+
+  $('barFill').style.width = '0';
+  $('prepare').classList.add('hidden');
+  $('play').classList.remove('hidden');
+  $('edit').classList.remove('hidden');
+  $('status').textContent = 'Ready to play — prepared in ' +
+    Math.round((Date.now() - t0) / 1000) + 's';
+}
+
+// ---------- playback ----------
+function mark(i) {
+  sentences.forEach(s => s.el.classList.remove('on'));
+  const s = sentences[i];
+  if (!s) { return; }
+  s.el.classList.add('on');
+  s.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function playFrom(i) {
+  if (i >= sentences.length) { finish(); return; }
+  idx = i;
+  const s = sentences[i];
+  if (!s.url) { playFrom(i + 1); return; }
+  mark(i);
+  player.src = s.url;
+  player.playbackRate = parseFloat($('rate').value);
+  player.play();
+  $('status').textContent = 'Reading — sentence ' + (i + 1) + ' of ' + sentences.length;
+}
+
+player.onended = () => { if (playing) { playFrom(idx + 1); } };
+
+function finish() {
+  playing = false;
+  sentences.forEach(s => s.el.classList.remove('on'));
+  idx = 0;
+  buttons();
+  $('status').textContent = 'Finished';
+}
+
+function buttons() {
+  const ready = !$('play').classList.contains('hidden') || playing;
+  $('play').classList.toggle('hidden', !ready || playing);
+  $('pause').classList.toggle('hidden', !playing);
+  $('stop').classList.toggle('hidden', !playing && idx === 0);
+}
+
+// ---------- wiring ----------
+$('prepare').onclick = prepare;
+
+$('play').onclick = () => {
+  playing = true;
+  buttons();
+  if (player.src && player.currentTime > 0 && !player.ended) { player.play(); }
+  else { playFrom(idx); }
+};
+
+$('pause').onclick = () => {
+  playing = false;
+  player.pause();
+  buttons();
+  $('status').textContent = 'Paused';
+};
+
+$('stop').onclick = () => {
+  playing = false;
+  player.pause();
+  player.currentTime = 0;
+  finish();
+  $('status').textContent = 'Stopped';
+};
+
+$('edit').onclick = () => {
+  playing = false;
+  player.pause();
+  sentences.forEach(s => { if (s.url) { URL.revokeObjectURL(s.url); } });
+  sentences = [];
+  idx = 0;
+  $('readPane').classList.add('hidden');
+  $('editPane').classList.remove('hidden');
+  $('edit').classList.add('hidden');
+  $('play').classList.add('hidden');
+  $('pause').classList.add('hidden');
+  $('stop').classList.add('hidden');
+  $('prepare').classList.remove('hidden');
+  $('prepare').disabled = false;
+  $('voice').disabled = false;
+  $('status').textContent = 'Ready';
+};
+
+$('rate').oninput = function () {
+  $('rateVal').textContent = parseFloat(this.value).toFixed(1) + 'x';
+  player.playbackRate = parseFloat(this.value);
+};
+$('size').oninput = function () {
+  $('sizeVal').textContent = this.value;
+  $('read').style.fontSize = this.value + 'px';
+};
+
+const themes = ['light', 'cream', 'dark'];
+$('theme').onclick = () => {
+  const c = document.body.getAttribute('data-theme');
+  document.body.setAttribute('data-theme', themes[(themes.indexOf(c) + 1) % themes.length]);
+};
+
+document.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space') { return; }
+  if (document.activeElement && /TEXTAREA|SELECT|INPUT/.test(document.activeElement.tagName)) { return; }
+  e.preventDefault();
+  if (playing) { $('pause').click(); }
+  else if (!$('play').classList.contains('hidden')) { $('play').click(); }
+});
+
+boot();
+</script>
+</body>
+</html>
