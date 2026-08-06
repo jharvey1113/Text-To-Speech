@@ -78,6 +78,14 @@
   .warn { color: #b3261e; }
   [data-theme="dark"] .warn { color: #ffb4ab; }
   .hidden { display: none !important; }
+  #banner {
+    flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: .7rem;
+    padding: .7rem 1rem; background: #fdf2d6; color: #4a3a05;
+    border-bottom: 1px solid #e6cf8e; font-size: .88rem;
+  }
+  [data-theme="dark"] #banner { background: #3a3108; color: #f4e6b8; border-bottom-color: #5c4d16; }
+  #banner button { background: #4a3a05; border-color: #4a3a05; color: #fdf2d6; font-weight: 600; }
+  #banner button.ghost { background: transparent; border-color: currentColor; color: inherit; font-weight: 400; }
   @media (prefers-reduced-motion: reduce) { .s { transition: none; } }
 </style>
 </head>
@@ -87,8 +95,17 @@
   <span class="brand">Class Reader</span>
 
   <div class="grp">
+    <label for="engine">Reader</label>
+    <select id="engine">
+      <option value="local">Natural voice</option>
+      <option value="quick">Quick voice</option>
+    </select>
+  </div>
+
+  <div class="grp">
     <label for="voice">Voice</label>
     <select id="voice" disabled></select>
+    <button id="allVoices" title="Show every voice">All</button>
   </div>
 
   <div class="grp">
@@ -113,6 +130,12 @@
     <button id="stop" class="hidden">Stop</button>
   </div>
 </header>
+
+<div id="banner" class="hidden">
+  <span id="bannerText"></span>
+  <button id="switchQuick">Use the Quick voice</button>
+  <button id="keepWaiting" class="ghost">Keep waiting</button>
+</div>
 
 <div id="bar"><div id="barFill"></div></div>
 
@@ -147,9 +170,13 @@ let idx = 0;
 let playing = false;
 let generating = false;
 let readyCount = 0;
+let engine = 'local';   // 'local' = Kokoro model, 'quick' = browser speech
+let slowTimer = null;
+let speechGen = 0;      // invalidates stale browser-speech callbacks
 
 // ---------- model ----------
 async function boot() {
+  fillVoices();
   const device = ('gpu' in navigator) ? 'webgpu' : 'wasm';
   $('note').textContent = device === 'webgpu' ? 'WebGPU' : 'WASM (slower)';
 
@@ -166,33 +193,81 @@ async function boot() {
       }
     });
   } catch (err) {
-    $('status').innerHTML = '<span class="warn">Could not load the voice engine: ' +
-      err.message + '. The model host may be blocked on this network.</span>';
+    $('status').innerHTML = '<span class="warn">Natural voice unavailable (' +
+      err.message + '). Switched to the Quick voice.</span>';
+    engine = 'quick';
+    $('engine').value = 'quick';
+    $('prepare').textContent = 'Load text';
+    $('prepare').disabled = false;
+    fillVoices();
     return;
   }
 
   $('barFill').style.width = '0';
   fillVoices();
   $('voice').disabled = false;
-  $('prepare').disabled = false;
-  $('status').textContent = 'Ready';
+  if (engine === 'local') {
+    $('prepare').disabled = false;
+    $('status').textContent = 'Ready';
+  }
 }
+
+// Six voices is what a teacher needs. The rest are behind the All toggle.
+// Trimming the list is a usability choice, not a speed one — every voice
+// lives inside the same model file.
+const PICKS = ['af_heart', 'af_bella', 'af_nicole', 'am_michael', 'am_fenrir', 'am_puck'];
+let showAllVoices = false;
 
 function fillVoices() {
   const sel = $('voice');
-  const all = tts.voices || {};
-  const ids = Object.keys(all).filter(id => {
-    const v = all[id];
-    return !v.language || /^en/i.test(v.language) || /^[ab]/.test(id);
+  sel.textContent = '';
+
+  if (engine === 'quick') {
+    const list = (window.speechSynthesis ? speechSynthesis.getVoices() : [])
+      .filter(v => /^en/i.test(v.lang));
+    list.sort((a, b) => (/en-US/i.test(b.lang) ? 0 : 1) - (/en-US/i.test(a.lang) ? 0 : 1));
+    list.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v.name;
+      o.textContent = v.name.replace(/^Microsoft\s+/, '').replace(/\s*-\s*English.*$/, '');
+      sel.appendChild(o);
+    });
+    const best = list.find(v => /Google US English/i.test(v.name));
+    if (best) { sel.value = best.name; }
+    $('allVoices').classList.add('hidden');
+    sel.disabled = false;
+    return;
+  }
+
+  $('allVoices').classList.remove('hidden');
+  const all = tts ? (tts.voices || {}) : {};
+  const ids = showAllVoices
+    ? Object.keys(all)
+    : PICKS.filter(id => all[id]);
+  const use = ids.length ? ids : Object.keys(all);
+
+  const groups = { Female: [], Male: [], Other: [] };
+  use.forEach(id => {
+    const v = all[id] || {};
+    const g = /female/i.test(v.gender || '') ? 'Female'
+            : /male/i.test(v.gender || '') ? 'Male' : 'Other';
+    groups[g].push([id, v.name || id]);
   });
-  (ids.length ? ids : Object.keys(all)).forEach(id => {
-    const v = all[id];
-    const o = document.createElement('option');
-    o.value = id;
-    o.textContent = (v && v.name) ? v.name : id;
-    sel.appendChild(o);
+
+  Object.keys(groups).forEach(g => {
+    if (!groups[g].length) { return; }
+    const og = document.createElement('optgroup');
+    og.label = g;
+    groups[g].forEach(([id, name]) => {
+      const o = document.createElement('option');
+      o.value = id;
+      o.textContent = name;
+      og.appendChild(o);
+    });
+    sel.appendChild(og);
   });
   if (sel.querySelector('option[value="af_heart"]')) { sel.value = 'af_heart'; }
+  $('allVoices').textContent = showAllVoices ? 'Fewer' : 'All';
 }
 
 // ---------- text ----------
@@ -232,117 +307,53 @@ function build(text) {
   });
 }
 
-// RawAudio exposes toBlob in the browser build; fall back to encoding the
-// float samples ourselves if a future version drops it.
-function toBlob(audio) {
-  if (typeof audio.toBlob === 'function') { return audio.toBlob(); }
-  const data = audio.audio, sr = audio.sampling_rate;
-  const buf = new ArrayBuffer(44 + data.length * 2);
-  const view = new DataView(buf);
-  const str = (o, s) => { for (let i = 0; i < s.length; i++) { view.setUint8(o + i, s.charCodeAt(i)); } };
-  str(0, 'RIFF'); view.setUint32(4, 36 + data.length * 2, true); str(8, 'WAVE');
-  str(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true); view.setUint32(24, sr, true);
-  view.setUint32(28, sr * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
-  str(36, 'data'); view.setUint32(40, data.length * 2, true);
-  for (let i = 0; i < data.length; i++) {
-    const v = Math.max(-1, Math.min(1, data[i]));
-    view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
-  }
-  return new Blob([buf], { type: 'audio/wav' });
+function mark(i) {
+  sentences.forEach(s => s.el.classList.remove('on'));
+  const s = sentences[i];
+  if (!s) { return; }
+  s.el.classList.add('on');
+  s.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
 }
 
-// ---------- cache ----------
-// Keyed per sentence rather than per passage, so editing one line only
-// regenerates that line, and a sentence reused across passages is free.
-const DB_NAME = 'class-reader';
-const STORE = 'audio';
-let dbPromise = null;
-
-function db() {
-  if (dbPromise) { return dbPromise; }
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      if (!req.result.objectStoreNames.contains(STORE)) {
-        req.result.createObjectStore(STORE);
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-  return dbPromise;
+function finish() {
+  playing = false;
+  sentences.forEach(s => s.el.classList.remove('on'));
+  idx = 0;
+  showButtons({ play: true, pause: false, stop: false });
+  $('status').textContent = 'Finished';
 }
 
-function keyFor(voice, text) {
-  let h = 5381;
-  const s = text.trim();
-  for (let i = 0; i < s.length; i++) { h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; }
-  return voice + '|' + s.length + '|' + h.toString(36);
+function showButtons(st) {
+  $('play').classList.toggle('hidden', !st.play);
+  $('pause').classList.toggle('hidden', !st.pause);
+  $('stop').classList.toggle('hidden', !st.stop);
 }
 
-async function cacheGet(key) {
-  try {
-    const d = await db();
-    return await new Promise((resolve) => {
-      const r = d.transaction(STORE, 'readonly').objectStore(STORE).get(key);
-      r.onsuccess = () => resolve(r.result || null);
-      r.onerror = () => resolve(null);
-    });
-  } catch (e) { return null; }
-}
-
-async function cachePut(key, blob) {
-  try {
-    const d = await db();
-    d.transaction(STORE, 'readwrite').objectStore(STORE).put(blob, key);
-  } catch (e) { /* storage full or unavailable — carry on without caching */ }
-}
-
-async function cacheClear() {
-  try {
-    const d = await db();
-    await new Promise((resolve) => {
-      const r = d.transaction(STORE, 'readwrite').objectStore(STORE).clear();
-      r.onsuccess = resolve;
-      r.onerror = resolve;
-    });
-    $('status').textContent = 'Saved audio cleared';
-  } catch (e) {
-    $('status').textContent = 'Could not clear saved audio';
-  }
-}
-
-// Generation runs about twice as fast as speech, so playback starts as soon
-// as a couple of sentences exist and the generator stays ahead of the reader.
-async function prepare() {
-  const text = $('input').value.trim();
-  if (!text) { $('status').textContent = 'Paste some text first.'; return; }
-
-  build(text);
-  $('editPane').classList.add('hidden');
-  $('readPane').classList.remove('hidden');
-  $('voice').disabled = true;
-  $('prepare').classList.add('hidden');
-  $('play').classList.remove('hidden');
-  $('play').disabled = true;
-  $('edit').classList.remove('hidden');
-
+// ================= NATURAL VOICE (local model) =================
+async function prepareLocal() {
   const voice = $('voice').value;
   const t0 = Date.now();
   generating = true;
   readyCount = 0;
-  let fromCache = 0;
-  let generated = 0;
+  let fromCache = 0, generated = 0;
+
+  // Give the machine a real chance before suggesting anything. Only if the
+  // Play button is still unavailable after 45s do we raise the fallback.
+  slowTimer = setTimeout(() => {
+    if (generating && $('play').disabled) {
+      $('bannerText').innerHTML =
+        '<strong>Still preparing.</strong> This computer may be slow with the Natural voice.';
+      $('banner').classList.remove('hidden');
+    }
+  }, 45000);
 
   for (let i = 0; i < sentences.length; i++) {
     if (!generating) { return; }
     const key = keyFor(voice, sentences[i].text);
     try {
       let blob = await cacheGet(key);
-      if (blob) {
-        fromCache++;
-      } else {
+      if (blob) { fromCache++; }
+      else {
         const audio = await tts.generate(sentences[i].text, { voice, speed: 1 });
         blob = toBlob(audio);
         generated++;
@@ -356,11 +367,8 @@ async function prepare() {
     readyCount = i + 1;
     if (readyCount >= 2) { $('play').disabled = false; }
 
-    // Only count freshly generated sentences when estimating, since cached
-    // ones return instantly and would make the estimate nonsense.
-    const remaining = sentences.length - readyCount;
     const per = generated ? ((Date.now() - t0) / 1000) / generated : 0;
-    const left = Math.round(per * remaining);
+    const left = Math.round(per * (sentences.length - readyCount));
     $('barFill').style.width = Math.round((readyCount / sentences.length) * 100) + '%';
     if (!playing) {
       $('status').textContent = 'Preparing ' + readyCount + ' of ' + sentences.length +
@@ -371,6 +379,8 @@ async function prepare() {
   }
 
   generating = false;
+  clearTimeout(slowTimer);
+  $('banner').classList.add('hidden');
   $('barFill').style.width = '0';
   if (!playing) {
     $('status').textContent = fromCache === sentences.length
@@ -379,28 +389,16 @@ async function prepare() {
   }
 }
 
-// ---------- playback ----------
-function mark(i) {
-  sentences.forEach(s => s.el.classList.remove('on'));
-  const s = sentences[i];
-  if (!s) { return; }
-  s.el.classList.add('on');
-  s.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-}
-
-function playFrom(i) {
+function playLocalFrom(i) {
   if (i >= sentences.length) { finish(); return; }
   idx = i;
   const s = sentences[i];
-
-  // Reader caught up to the generator — hold rather than skip.
   if (!s.url) {
-    if (!generating) { playFrom(i + 1); return; }
+    if (!generating) { playLocalFrom(i + 1); return; }
     $('status').textContent = 'Catching up\u2026';
-    setTimeout(() => { if (playing) { playFrom(i); } }, 400);
+    setTimeout(() => { if (playing) { playLocalFrom(i); } }, 400);
     return;
   }
-
   mark(i);
   player.src = s.url;
   player.playbackRate = parseFloat($('rate').value);
@@ -408,44 +406,112 @@ function playFrom(i) {
   $('status').textContent = 'Reading \u2014 sentence ' + (i + 1) + ' of ' + sentences.length;
 }
 
-player.onended = () => { if (playing) { playFrom(idx + 1); } };
+player.onended = () => { if (playing && engine === 'local') { playLocalFrom(idx + 1); } };
 
-function finish() {
+// ================= QUICK VOICE (browser speech) =================
+// Nothing to prepare. Every remaining sentence is queued at once so the
+// engine plays them back to back without a gap between requests.
+function playQuickFrom(startIndex) {
+  const gen = ++speechGen;
+  speechSynthesis.cancel();
+
+  setTimeout(() => {
+    if (gen !== speechGen) { return; }
+    const name = $('voice').value;
+    const voice = speechSynthesis.getVoices().find(v => v.name === name);
+    const rate = parseFloat($('rate').value);
+
+    for (let i = startIndex; i < sentences.length; i++) {
+      ((si) => {
+        const u = new SpeechSynthesisUtterance(sentences[si].text);
+        if (voice) { u.voice = voice; u.lang = voice.lang; }
+        u.rate = rate;
+        u.onstart = () => {
+          if (gen !== speechGen) { return; }
+          idx = si;
+          mark(si);
+          $('status').textContent = 'Reading \u2014 sentence ' + (si + 1) + ' of ' + sentences.length;
+        };
+        u.onend = () => {
+          if (gen !== speechGen) { return; }
+          if (si === sentences.length - 1) { finish(); }
+        };
+        u.onerror = (e) => {
+          if (gen !== speechGen || e.error === 'interrupted' || e.error === 'canceled') { return; }
+          playing = false;
+          showButtons({ play: true, pause: false, stop: false });
+          $('status').innerHTML = '<span class="warn">Playback error: ' + e.error + '</span>';
+        };
+        speechSynthesis.speak(u);
+      })(i);
+    }
+  }, 60);
+}
+
+// ================= shared controls =================
+function startReading() {
+  const text = $('input').value.trim();
+  if (!text) { $('status').textContent = 'Paste some text first.'; return; }
+
+  build(text);
+  $('editPane').classList.add('hidden');
+  $('readPane').classList.remove('hidden');
+  $('prepare').classList.add('hidden');
+  $('edit').classList.remove('hidden');
+  $('play').classList.remove('hidden');
+  $('engine').disabled = true;
+
+  if (engine === 'quick') {
+    sentences.forEach(s => s.el.classList.remove('pending'));
+    $('play').disabled = false;
+    $('status').textContent = sentences.length + ' sentences ready';
+  } else {
+    $('voice').disabled = true;
+    $('play').disabled = true;
+    prepareLocal();
+  }
+}
+
+function switchToQuick() {
+  generating = false;
+  clearTimeout(slowTimer);
+  $('banner').classList.add('hidden');
   playing = false;
-  sentences.forEach(s => s.el.classList.remove('on'));
+  player.pause();
+
+  engine = 'quick';
+  $('engine').value = 'quick';
+  fillVoices();
+  sentences.forEach(s => s.el.classList.remove('pending'));
+  $('barFill').style.width = '0';
+  $('play').disabled = false;
   idx = 0;
-  buttons();
-  $('status').textContent = 'Finished';
+  $('status').textContent = 'Switched to the Quick voice \u2014 ready to play';
+  $('note').textContent = 'Natural voice was too slow on this computer';
 }
 
-function buttons() {
-  const ready = !$('play').classList.contains('hidden') || playing;
-  $('play').classList.toggle('hidden', !ready || playing);
-  $('pause').classList.toggle('hidden', !playing);
-  $('stop').classList.toggle('hidden', !playing && idx === 0);
-}
-
-// ---------- wiring ----------
-$('prepare').onclick = prepare;
+$('prepare').onclick = startReading;
 
 $('play').onclick = () => {
   playing = true;
-  buttons();
-  if (player.src && player.currentTime > 0 && !player.ended) { player.play(); }
-  else { playFrom(idx); }
+  showButtons({ play: false, pause: true, stop: true });
+  if (engine === 'quick') { playQuickFrom(idx); }
+  else if (player.src && player.currentTime > 0 && !player.ended) { player.play(); }
+  else { playLocalFrom(idx); }
 };
 
 $('pause').onclick = () => {
   playing = false;
-  player.pause();
-  buttons();
-  $('status').textContent = 'Paused';
+  if (engine === 'quick') { speechGen++; speechSynthesis.cancel(); }
+  else { player.pause(); }
+  showButtons({ play: true, pause: false, stop: true });
+  $('status').textContent = 'Paused at sentence ' + (idx + 1);
 };
 
 $('stop').onclick = () => {
   playing = false;
-  player.pause();
-  player.currentTime = 0;
+  if (engine === 'quick') { speechGen++; speechSynthesis.cancel(); }
+  else { player.pause(); player.currentTime = 0; }
   finish();
   $('status').textContent = 'Stopped';
 };
@@ -454,21 +520,39 @@ $('edit').onclick = () => {
   playing = false;
   generating = false;
   readyCount = 0;
+  speechGen++;
+  clearTimeout(slowTimer);
+  if (window.speechSynthesis) { speechSynthesis.cancel(); }
   player.pause();
   sentences.forEach(s => { if (s.url) { URL.revokeObjectURL(s.url); } });
   sentences = [];
   idx = 0;
+  $('banner').classList.add('hidden');
   $('readPane').classList.add('hidden');
   $('editPane').classList.remove('hidden');
   $('edit').classList.add('hidden');
-  $('play').classList.add('hidden');
-  $('pause').classList.add('hidden');
-  $('stop').classList.add('hidden');
+  showButtons({ play: false, pause: false, stop: false });
   $('prepare').classList.remove('hidden');
   $('prepare').disabled = false;
+  $('engine').disabled = false;
   $('voice').disabled = false;
   $('status').textContent = 'Ready';
 };
+
+$('engine').onchange = function () {
+  engine = this.value;
+  fillVoices();
+  $('prepare').textContent = engine === 'quick' ? 'Load text' : 'Prepare audio';
+  $('prepare').disabled = (engine === 'local' && !tts);
+  $('status').textContent = engine === 'quick'
+    ? 'Quick voice \u2014 no wait, plainer sound'
+    : (tts ? 'Natural voice \u2014 ready' : 'Natural voice \u2014 still loading');
+};
+
+$('switchQuick').onclick = switchToQuick;
+$('keepWaiting').onclick = () => { $('banner').classList.add('hidden'); };
+$('allVoices').onclick = () => { showAllVoices = !showAllVoices; fillVoices(); };
+$('clear').onclick = cacheClear;
 
 $('rate').oninput = function () {
   $('rateVal').textContent = parseFloat(this.value).toFixed(1) + 'x';
@@ -478,8 +562,6 @@ $('size').oninput = function () {
   $('sizeVal').textContent = this.value;
   $('read').style.fontSize = this.value + 'px';
 };
-
-$('clear').onclick = cacheClear;
 
 const themes = ['light', 'cream', 'dark'];
 $('theme').onclick = () => {
@@ -492,8 +574,12 @@ document.addEventListener('keydown', (e) => {
   if (document.activeElement && /TEXTAREA|SELECT|INPUT/.test(document.activeElement.tagName)) { return; }
   e.preventDefault();
   if (playing) { $('pause').click(); }
-  else if (!$('play').classList.contains('hidden')) { $('play').click(); }
+  else if (!$('play').classList.contains('hidden') && !$('play').disabled) { $('play').click(); }
 });
+
+if (window.speechSynthesis) {
+  speechSynthesis.addEventListener('voiceschanged', () => { if (engine === 'quick') { fillVoices(); } });
+}
 
 boot();
 </script>
