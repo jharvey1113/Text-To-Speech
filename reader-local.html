@@ -103,7 +103,7 @@
     <span class="val" id="sizeVal">34</span>
   </div>
 
-  <div class="grp"><button id="theme">Theme</button></div>
+  <div class="grp"><button id="theme">Theme</button><button id="clear" title="Delete all audio saved on this computer">Clear saved</button></div>
 
   <div class="grp" style="margin-left:auto">
     <button id="edit" class="hidden">Edit text</button>
@@ -145,6 +145,8 @@ let tts = null;
 let sentences = [];   // [{text, el, url}]
 let idx = 0;
 let playing = false;
+let generating = false;
+let readyCount = 0;
 
 // ---------- model ----------
 async function boot() {
@@ -232,10 +234,8 @@ function build(text) {
 
 // RawAudio exposes toBlob in the browser build; fall back to encoding the
 // float samples ourselves if a future version drops it.
-function toURL(audio) {
-  if (typeof audio.toBlob === 'function') {
-    return URL.createObjectURL(audio.toBlob());
-  }
+function toBlob(audio) {
+  if (typeof audio.toBlob === 'function') { return audio.toBlob(); }
   const data = audio.audio, sr = audio.sampling_rate;
   const buf = new ArrayBuffer(44 + data.length * 2);
   const view = new DataView(buf);
@@ -249,10 +249,72 @@ function toURL(audio) {
     const v = Math.max(-1, Math.min(1, data[i]));
     view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
   }
-  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  return new Blob([buf], { type: 'audio/wav' });
 }
 
-// ---------- prepare ----------
+// ---------- cache ----------
+// Keyed per sentence rather than per passage, so editing one line only
+// regenerates that line, and a sentence reused across passages is free.
+const DB_NAME = 'class-reader';
+const STORE = 'audio';
+let dbPromise = null;
+
+function db() {
+  if (dbPromise) { return dbPromise; }
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(STORE)) {
+        req.result.createObjectStore(STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+function keyFor(voice, text) {
+  let h = 5381;
+  const s = text.trim();
+  for (let i = 0; i < s.length; i++) { h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; }
+  return voice + '|' + s.length + '|' + h.toString(36);
+}
+
+async function cacheGet(key) {
+  try {
+    const d = await db();
+    return await new Promise((resolve) => {
+      const r = d.transaction(STORE, 'readonly').objectStore(STORE).get(key);
+      r.onsuccess = () => resolve(r.result || null);
+      r.onerror = () => resolve(null);
+    });
+  } catch (e) { return null; }
+}
+
+async function cachePut(key, blob) {
+  try {
+    const d = await db();
+    d.transaction(STORE, 'readwrite').objectStore(STORE).put(blob, key);
+  } catch (e) { /* storage full or unavailable — carry on without caching */ }
+}
+
+async function cacheClear() {
+  try {
+    const d = await db();
+    await new Promise((resolve) => {
+      const r = d.transaction(STORE, 'readwrite').objectStore(STORE).clear();
+      r.onsuccess = resolve;
+      r.onerror = resolve;
+    });
+    $('status').textContent = 'Saved audio cleared';
+  } catch (e) {
+    $('status').textContent = 'Could not clear saved audio';
+  }
+}
+
+// Generation runs about twice as fast as speech, so playback starts as soon
+// as a couple of sentences exist and the generator stays ahead of the reader.
 async function prepare() {
   const text = $('input').value.trim();
   if (!text) { $('status').textContent = 'Paste some text first.'; return; }
@@ -260,32 +322,61 @@ async function prepare() {
   build(text);
   $('editPane').classList.add('hidden');
   $('readPane').classList.remove('hidden');
-  $('prepare').disabled = true;
   $('voice').disabled = true;
-  $('edit').classList.add('hidden');
+  $('prepare').classList.add('hidden');
+  $('play').classList.remove('hidden');
+  $('play').disabled = true;
+  $('edit').classList.remove('hidden');
 
   const voice = $('voice').value;
   const t0 = Date.now();
+  generating = true;
+  readyCount = 0;
+  let fromCache = 0;
+  let generated = 0;
 
   for (let i = 0; i < sentences.length; i++) {
-    $('status').textContent = 'Preparing audio — ' + (i + 1) + ' of ' + sentences.length;
-    $('barFill').style.width = Math.round(((i) / sentences.length) * 100) + '%';
+    if (!generating) { return; }
+    const key = keyFor(voice, sentences[i].text);
     try {
-      const audio = await tts.generate(sentences[i].text, { voice, speed: 1 });
-      sentences[i].url = toURL(audio);
-      sentences[i].el.classList.remove('pending');
+      let blob = await cacheGet(key);
+      if (blob) {
+        fromCache++;
+      } else {
+        const audio = await tts.generate(sentences[i].text, { voice, speed: 1 });
+        blob = toBlob(audio);
+        generated++;
+        cachePut(key, blob);
+      }
+      sentences[i].url = URL.createObjectURL(blob);
     } catch (err) {
-      sentences[i].el.classList.remove('pending');
-      $('note').innerHTML = '<span class="warn">One sentence failed to generate.</span>';
+      $('note').innerHTML = '<span class="warn">A sentence failed to generate.</span>';
+    }
+    sentences[i].el.classList.remove('pending');
+    readyCount = i + 1;
+    if (readyCount >= 2) { $('play').disabled = false; }
+
+    // Only count freshly generated sentences when estimating, since cached
+    // ones return instantly and would make the estimate nonsense.
+    const remaining = sentences.length - readyCount;
+    const per = generated ? ((Date.now() - t0) / 1000) / generated : 0;
+    const left = Math.round(per * remaining);
+    $('barFill').style.width = Math.round((readyCount / sentences.length) * 100) + '%';
+    if (!playing) {
+      $('status').textContent = 'Preparing ' + readyCount + ' of ' + sentences.length +
+        (fromCache ? ' (' + fromCache + ' saved)' : '') +
+        (left > 2 ? ' \u2014 about ' + left + 's left' : '') +
+        (readyCount >= 2 ? ' \u2014 you can start now' : '');
     }
   }
 
+  generating = false;
   $('barFill').style.width = '0';
-  $('prepare').classList.add('hidden');
-  $('play').classList.remove('hidden');
-  $('edit').classList.remove('hidden');
-  $('status').textContent = 'Ready to play — prepared in ' +
-    Math.round((Date.now() - t0) / 1000) + 's';
+  if (!playing) {
+    $('status').textContent = fromCache === sentences.length
+      ? 'Ready \u2014 loaded from saved audio'
+      : 'Ready \u2014 prepared in ' + Math.round((Date.now() - t0) / 1000) + 's';
+  }
 }
 
 // ---------- playback ----------
@@ -301,12 +392,20 @@ function playFrom(i) {
   if (i >= sentences.length) { finish(); return; }
   idx = i;
   const s = sentences[i];
-  if (!s.url) { playFrom(i + 1); return; }
+
+  // Reader caught up to the generator — hold rather than skip.
+  if (!s.url) {
+    if (!generating) { playFrom(i + 1); return; }
+    $('status').textContent = 'Catching up\u2026';
+    setTimeout(() => { if (playing) { playFrom(i); } }, 400);
+    return;
+  }
+
   mark(i);
   player.src = s.url;
   player.playbackRate = parseFloat($('rate').value);
   player.play();
-  $('status').textContent = 'Reading — sentence ' + (i + 1) + ' of ' + sentences.length;
+  $('status').textContent = 'Reading \u2014 sentence ' + (i + 1) + ' of ' + sentences.length;
 }
 
 player.onended = () => { if (playing) { playFrom(idx + 1); } };
@@ -353,6 +452,8 @@ $('stop').onclick = () => {
 
 $('edit').onclick = () => {
   playing = false;
+  generating = false;
+  readyCount = 0;
   player.pause();
   sentences.forEach(s => { if (s.url) { URL.revokeObjectURL(s.url); } });
   sentences = [];
@@ -377,6 +478,8 @@ $('size').oninput = function () {
   $('sizeVal').textContent = this.value;
   $('read').style.fontSize = this.value + 'px';
 };
+
+$('clear').onclick = cacheClear;
 
 const themes = ['light', 'cream', 'dark'];
 $('theme').onclick = () => {
