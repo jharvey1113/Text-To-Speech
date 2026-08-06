@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Class Reader</title>
+<style>
+  :root {
+    --ink: #14181d;
+    --paper: #ffffff;
+    --muted: #5a6472;
+    --line: #d8dde4;
+    --accent: #0f5f5c;
+    --sentence: #dff0ef;
+    --word: #ffd66b;
+  }
+  [data-theme="cream"] {
+    --ink: #2c2620; --paper: #f7f1e4; --line: #ded3bd;
+    --sentence: #e6ddc7; --word: #f2c14e;
+  }
+  [data-theme="dark"] {
+    --ink: #e9edf2; --paper: #14181d; --muted: #9aa5b3; --line: #2c343e;
+    --accent: #5fd3ce; --sentence: #1e2b32; --word: #8a6b16;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    flex: none; border-bottom: 1px solid var(--line); padding: .6rem 1rem;
+    display: flex; flex-wrap: wrap; gap: .5rem 1.1rem; align-items: center;
+  }
+  .brand { font-weight: 700; margin-right: .3rem; }
+  .grp { display: flex; align-items: center; gap: .4rem; font-size: .82rem; color: var(--muted); }
+  .grp label { white-space: nowrap; }
+  select, input[type=range] { accent-color: var(--accent); }
+  select {
+    font: inherit; font-size: .85rem; padding: .3rem .4rem; max-width: 20rem;
+    background: var(--paper); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 4px;
+  }
+  input[type=range] { width: 7rem; }
+  .val { font-variant-numeric: tabular-nums; min-width: 2.6rem; }
+  button {
+    font: inherit; font-size: .85rem; padding: .4rem .8rem;
+    border: 1px solid var(--line); background: var(--paper); color: var(--ink);
+    border-radius: 5px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.go { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  [data-theme="dark"] button.go { color: #06201f; }
+  main {
+    flex: 1; overflow-y: auto; display: flex; justify-content: center;
+    padding: 2rem 1.5rem 5rem;
+  }
+  .pane { width: 100%; max-width: 60rem; }
+  textarea {
+    width: 100%; min-height: 55vh;
+    font-family: Georgia, "Iowan Old Style", serif;
+    font-size: 1.05rem; line-height: 1.6; padding: 1.2rem;
+    background: var(--paper); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; resize: vertical;
+  }
+  .hint { color: var(--muted); font-size: .85rem; margin: .8rem 0 0; }
+  #read {
+    font-family: Georgia, "Iowan Old Style", serif;
+    font-size: 34px; line-height: 1.65;
+  }
+  #read p { margin: 0 0 1em; }
+  .s { border-radius: 4px; padding: .06em 0; transition: background-color .1s; }
+  .s.on { background: var(--sentence); }
+  .w.on { background: var(--word); border-radius: 3px; box-shadow: 0 0 0 .12em var(--word); }
+  footer {
+    flex: none; border-top: 1px solid var(--line); padding: .45rem 1rem;
+    font-size: .8rem; color: var(--muted);
+    display: flex; justify-content: space-between; gap: 1rem;
+  }
+  .warn { color: #b3261e; }
+  [data-theme="dark"] .warn { color: #ffb4ab; }
+  .hidden { display: none !important; }
+  #banner {
+    flex: none;
+    display: flex; flex-wrap: wrap; align-items: center; gap: .7rem;
+    padding: .7rem 1rem;
+    background: #fdf2d6; color: #4a3a05;
+    border-bottom: 1px solid #e6cf8e;
+    font-size: .88rem;
+  }
+  [data-theme="dark"] #banner { background: #3a3108; color: #f4e6b8; border-bottom-color: #5c4d16; }
+  #banner strong { font-weight: 700; }
+  #banner button {
+    background: #4a3a05; border-color: #4a3a05; color: #fdf2d6; font-weight: 600;
+  }
+  #banner button.ghost { background: transparent; border-color: currentColor; color: inherit; font-weight: 400; }
+  @media (prefers-reduced-motion: reduce) { .s { transition: none; } }
+</style>
+</head>
+<body data-theme="light">
+
+<header>
+  <span class="brand">Class Reader</span>
+
+  <div class="grp">
+    <label for="voice">Voice</label>
+    <select id="voice"></select>
+    <button id="allVoices" title="Show every voice this device offers">All</button>
+  </div>
+
+  <div class="grp">
+    <label for="rate">Speed</label>
+    <input type="range" id="rate" min="0.5" max="1.6" step="0.05" value="1">
+    <span class="val" id="rateVal">1.0x</span>
+  </div>
+
+  <div class="grp">
+    <label for="size">Size</label>
+    <input type="range" id="size" min="18" max="80" step="2" value="34">
+    <span class="val" id="sizeVal">34</span>
+  </div>
+
+  <div class="grp"><button id="theme">Theme</button></div>
+
+  <div class="grp" style="margin-left:auto">
+    <button id="edit" class="hidden">Edit text</button>
+    <button id="load" class="go">Load text</button>
+    <button id="play" class="go hidden">Play</button>
+    <button id="pause" class="hidden">Pause</button>
+    <button id="stop" class="hidden">Stop</button>
+  </div>
+</header>
+
+<div id="banner" class="hidden">
+  <span id="bannerText"></span>
+  <button id="toEdge">Open in Edge</button>
+  <button id="dismiss" class="ghost">Continue anyway</button>
+</div>
+
+<main>
+  <div class="pane" id="editPane">
+    <textarea id="input" placeholder="Paste a passage, short story, or worksheet text here, then choose Load text."></textarea>
+    <p class="hint">
+      Voices marked Natural need an internet connection and are only offered by
+      Microsoft Edge. Pick a voice and test a paragraph before class starts.
+    </p>
+  </div>
+  <div class="pane hidden" id="readPane"><div id="read"></div></div>
+</main>
+
+<footer>
+  <span id="status">Ready</span>
+  <span id="note"></span>
+</footer>
+
+<script>
+(function () {
+  var synth = window.speechSynthesis;
+  var $ = function (id) { return document.getElementById(id); };
+
+  if (!synth) {
+    $('status').innerHTML = '<span class="warn">This browser has no speech support. Open in Microsoft Edge.</span>';
+    $('load').disabled = true;
+    return;
+  }
+
+  // Target size for one spoken utterance. Big enough that the seams between
+  // requests stop being audible, small enough to stay clear of the long-text
+  // cutoff some engines hit.
+  var CHUNK_TARGET = 520;
+
+  var voices = [];
+  var showAll = false;
+  var chunks = [];      // [{text, sentences:[{start,end,el,words:[{start,end,el}]}]}]
+  var cur = 0;
+  var playing = false;
+  var paused = false;
+  var generation = 0;   // invalidates stale utterance callbacks after a cancel
+
+  // ---------- voices ----------
+  function isGood(v) { return /^en/i.test(v.lang) && /natural/i.test(v.name); }
+
+  function label(v) {
+    var m = v.name.match(/Microsoft\s+([A-Za-z]+)/);
+    var who = m ? m[1] : v.name;
+    var where = v.name.match(/\(([^)]+)\)\s*$/);
+    return who + (where ? ' \u2014 ' + where[1] : ' (' + v.lang + ')');
+  }
+
+  var lastCount = -1;
+  function loadVoices() {
+    var list = synth.getVoices() || [];
+    if (!list.length || list.length === lastCount) { return; }
+    lastCount = list.length;
+    voices = list;
+    renderVoices();
+  }
+
+  function renderVoices() {
+    var sel = $('voice');
+    var prev = sel.value;
+    var pool = voices.filter(showAll ? function () { return true; } : isGood);
+
+    if (!pool.length) {
+      pool = voices.filter(function (v) { return /^en/i.test(v.lang); });
+      $('note').innerHTML = '<span class="warn">No Natural voices here. Open this page in Microsoft Edge for better voices.</span>';
+    } else if (!showAll) {
+      $('note').textContent = pool.length + ' Natural voices available';
+    }
+
+    pool.sort(function (a, b) {
+      var au = /en-US/i.test(a.lang) ? 0 : 1;
+      var bu = /en-US/i.test(b.lang) ? 0 : 1;
+      return au - bu || a.name.localeCompare(b.name);
+    });
+
+    sel.textContent = '';
+    pool.forEach(function (v) {
+      var o = document.createElement('option');
+      o.value = v.name;
+      o.textContent = showAll ? v.name : label(v);
+      sel.appendChild(o);
+    });
+    if (prev && pool.some(function (v) { return v.name === prev; })) { sel.value = prev; }
+    $('allVoices').textContent = showAll ? 'Natural only' : 'All';
+  }
+
+  synth.addEventListener('voiceschanged', loadVoices);
+  loadVoices();
+  setTimeout(loadVoices, 300);
+  setTimeout(loadVoices, 1200);
+
+  /**
+   * The Natural voices only exist in Edge. Rather than trusting anyone to read
+   * an instruction in an email, check on load and offer to hand off.
+   */
+  var dismissed = false;
+  function checkBrowser() {
+    if (dismissed) { return; }
+    var banner = $('banner');
+    var hasNatural = voices.some(isGood);
+    if (hasNatural) { banner.classList.add('hidden'); return; }
+
+    var isEdge = /Edg\//.test(navigator.userAgent);
+    if (isEdge) {
+      $('bannerText').innerHTML =
+        '<strong>No Natural voices loaded.</strong> They need an internet connection \u2014 check yours, then reload.';
+      $('toEdge').classList.add('hidden');
+    } else {
+      $('bannerText').innerHTML =
+        '<strong>This browser only has robotic voices.</strong> Microsoft Edge has much better ones, already installed on this computer.';
+      $('toEdge').classList.remove('hidden');
+    }
+    banner.classList.remove('hidden');
+  }
+  setTimeout(checkBrowser, 1600);
+
+  $('toEdge').onclick = function () {
+    var here = window.location.href;
+    if (/^file:/.test(here)) {
+      $('bannerText').innerHTML =
+        '<strong>Open this file in Edge manually:</strong> right-click it \u2192 Open with \u2192 Microsoft Edge.';
+      $('toEdge').classList.add('hidden');
+      return;
+    }
+    window.location.href = 'microsoft-edge:' + here;
+  };
+
+  $('dismiss').onclick = function () {
+    dismissed = true;
+    $('banner').classList.add('hidden');
+  };
+
+  function chosenVoice() {
+    var name = $('voice').value;
+    for (var i = 0; i < voices.length; i++) {
+      if (voices[i].name === name) { return voices[i]; }
+    }
+    return null;
+  }
+
+  // ---------- text -> chunks of sentences ----------
+  function sentencesIn(block) {
+    var raw = block.match(/[^.!?]+[.!?]*\s*/g) || [block];
+    var out = [];
+    raw.forEach(function (s) {
+      if (!s.trim()) { return; }
+      if (s.length > CHUNK_TARGET) {
+        var parts = s.match(/[^,]+,?\s*/g) || [s];
+        var buf = '';
+        parts.forEach(function (p) {
+          if ((buf + p).length > CHUNK_TARGET && buf) { out.push(buf); buf = p; }
+          else { buf += p; }
+        });
+        if (buf.trim()) { out.push(buf); }
+      } else { out.push(s); }
+    });
+    return out;
+  }
+
+  function build(text) {
+    var read = $('read');
+    read.textContent = '';
+    chunks = [];
+
+    text.split(/\n\s*\n/).forEach(function (block) {
+      if (!block.trim()) { return; }
+      var p = document.createElement('p');
+      var sents = sentencesIn(block.replace(/\s*\n\s*/g, ' '));
+
+      // Pack sentences into chunks near CHUNK_TARGET so the engine speaks
+      // several at once and the seams disappear.
+      var chunk = null;
+      sents.forEach(function (sentence) {
+        if (!chunk || (chunk.text.length + sentence.length) > CHUNK_TARGET) {
+          chunk = { text: '', sentences: [] };
+          chunks.push(chunk);
+        }
+        var offset = chunk.text.length;
+        var span = document.createElement('span');
+        span.className = 's';
+        var rec = { start: offset, end: offset + sentence.length, el: span, words: [] };
+
+        var re = /\S+/g, m, cursor = 0;
+        while ((m = re.exec(sentence)) !== null) {
+          if (m.index > cursor) {
+            span.appendChild(document.createTextNode(sentence.slice(cursor, m.index)));
+          }
+          var w = document.createElement('span');
+          w.className = 'w';
+          w.textContent = m[0];
+          span.appendChild(w);
+          rec.words.push({ start: offset + m.index, end: offset + m.index + m[0].length, el: w });
+          cursor = m.index + m[0].length;
+        }
+        if (cursor < sentence.length) {
+          span.appendChild(document.createTextNode(sentence.slice(cursor)));
+        }
+
+        chunk.text += sentence;
+        chunk.sentences.push(rec);
+        p.appendChild(span);
+      });
+      read.appendChild(p);
+    });
+  }
+
+  function totalSentences() {
+    return chunks.reduce(function (n, c) { return n + c.sentences.length; }, 0);
+  }
+
+  // ---------- playback ----------
+  function clearMarks() {
+    chunks.forEach(function (c) {
+      c.sentences.forEach(function (s) {
+        s.el.classList.remove('on');
+        s.words.forEach(function (w) { w.el.classList.remove('on'); });
+      });
+    });
+  }
+
+  function markSentence(chunk, sent) {
+    clearMarks();
+    sent.el.classList.add('on');
+    sent.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
+  /**
+   * Queue every remaining chunk at once. The engine plays them back to back
+   * with no round trip between them, which is what removes the stutter.
+   * Each utterance carries its own handlers, so highlighting still works.
+   */
+  function queueFrom(startIndex) {
+    var gen = ++generation;
+    synth.cancel();
+
+    // Some builds need a beat after cancel before speak() takes.
+    setTimeout(function () {
+      if (gen !== generation) { return; }
+      var voice = chosenVoice();
+      var rate = parseFloat($('rate').value);
+
+      for (var i = startIndex; i < chunks.length; i++) {
+        (function (ci) {
+          var c = chunks[ci];
+          var u = new SpeechSynthesisUtterance(c.text);
+          if (voice) { u.voice = voice; u.lang = voice.lang; }
+          u.rate = rate;
+
+          u.onstart = function () {
+            if (gen !== generation) { return; }
+            cur = ci;
+            markSentence(c, c.sentences[0]);
+            $('status').textContent = 'Reading \u2014 part ' + (ci + 1) + ' of ' + chunks.length;
+          };
+
+          u.onboundary = function (e) {
+            if (gen !== generation || typeof e.charIndex !== 'number') { return; }
+            for (var si = 0; si < c.sentences.length; si++) {
+              var s = c.sentences[si];
+              if (e.charIndex >= s.start && e.charIndex < s.end) {
+                if (!s.el.classList.contains('on')) { markSentence(c, s); }
+                for (var wi = 0; wi < s.words.length; wi++) {
+                  var w = s.words[wi];
+                  if (e.charIndex >= w.start && e.charIndex < w.end) {
+                    s.words.forEach(function (x) { x.el.classList.remove('on'); });
+                    w.el.classList.add('on');
+                    break;
+                  }
+                }
+                break;
+              }
+            }
+          };
+
+          u.onend = function () {
+            if (gen !== generation) { return; }
+            if (ci === chunks.length - 1) { finish(); }
+          };
+
+          u.onerror = function (e) {
+            if (gen !== generation) { return; }
+            if (e.error === 'interrupted' || e.error === 'canceled') { return; }
+            playing = false;
+            setButtons();
+            $('status').innerHTML = '<span class="warn">Playback error: ' + e.error +
+              '. Natural voices need internet \u2014 check the connection.</span>';
+          };
+
+          synth.speak(u);
+        })(i);
+      }
+    }, 60);
+  }
+
+  function finish() {
+    playing = false;
+    paused = false;
+    clearMarks();
+    cur = 0;
+    setButtons();
+    $('status').textContent = 'Finished';
+  }
+
+  function setButtons() {
+    var reading = !$('readPane').classList.contains('hidden');
+    $('play').classList.toggle('hidden', !reading || (playing && !paused));
+    $('pause').classList.toggle('hidden', !reading || !playing || paused);
+    $('stop').classList.toggle('hidden', !reading || (!playing && !paused));
+    $('play').textContent = paused ? 'Resume' : 'Play';
+  }
+
+  // ---------- wiring ----------
+  $('load').onclick = function () {
+    var text = $('input').value.trim();
+    if (!text) { $('status').textContent = 'Paste some text first.'; return; }
+    build(text);
+    $('editPane').classList.add('hidden');
+    $('readPane').classList.remove('hidden');
+    $('load').classList.add('hidden');
+    $('edit').classList.remove('hidden');
+    $('status').textContent = totalSentences() + ' sentences in ' + chunks.length + ' parts';
+    setButtons();
+  };
+
+  $('edit').onclick = function () {
+    generation++;
+    synth.cancel();
+    playing = false; paused = false;
+    $('readPane').classList.add('hidden');
+    $('editPane').classList.remove('hidden');
+    $('edit').classList.add('hidden');
+    $('load').classList.remove('hidden');
+    setButtons();
+    $('status').textContent = 'Ready';
+  };
+
+  $('play').onclick = function () {
+    var from = paused ? cur : 0;
+    paused = false;
+    playing = true;
+    setButtons();
+    queueFrom(from);
+  };
+
+  // Resuming restarts the current part rather than using native resume,
+  // which is unreliable on network voices.
+  $('pause').onclick = function () {
+    generation++;
+    synth.cancel();
+    paused = true;
+    playing = false;
+    setButtons();
+    $('status').textContent = 'Paused \u2014 will resume from part ' + (cur + 1);
+  };
+
+  $('stop').onclick = function () {
+    generation++;
+    synth.cancel();
+    playing = false;
+    finish();
+    $('status').textContent = 'Stopped';
+  };
+
+  $('rate').oninput = function () {
+    $('rateVal').textContent = parseFloat(this.value).toFixed(1) + 'x';
+  };
+  $('size').oninput = function () {
+    $('sizeVal').textContent = this.value;
+    $('read').style.fontSize = this.value + 'px';
+  };
+  $('allVoices').onclick = function () { showAll = !showAll; renderVoices(); };
+
+  var themes = ['light', 'cream', 'dark'];
+  $('theme').onclick = function () {
+    var c = document.body.getAttribute('data-theme');
+    document.body.setAttribute('data-theme', themes[(themes.indexOf(c) + 1) % themes.length]);
+  };
+
+  document.addEventListener('keydown', function (e) {
+    if (e.code !== 'Space') { return; }
+    if (document.activeElement && /TEXTAREA|SELECT|INPUT/.test(document.activeElement.tagName)) { return; }
+    e.preventDefault();
+    if (playing && !paused) { $('pause').click(); }
+    else if (!$('play').classList.contains('hidden')) { $('play').click(); }
+  });
+
+  setButtons();
+})();
+</script>
+</body>
+</html>
