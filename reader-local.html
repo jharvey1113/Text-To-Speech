@@ -152,15 +152,13 @@
 </main>
 
 <footer>
-  <span id="status">Loading voice engine…</span>
+  <span id="status">Starting…</span>
   <span id="note"></span>
 </footer>
 
 <audio id="player"></audio>
 
 <script type="module">
-import { KokoroTTS } from "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
-
 const $ = (id) => document.getElementById(id);
 const player = $('player');
 
@@ -175,10 +173,35 @@ let slowTimer = null;
 let speechGen = 0;      // invalidates stale browser-speech callbacks
 
 // ---------- model ----------
-async function boot() {
+function fallbackToQuick(why) {
+  engine = 'quick';
+  $('engine').value = 'quick';
+  $('prepare').textContent = 'Load text';
+  $('prepare').disabled = false;
   fillVoices();
+  $('status').innerHTML = '<span class="warn">Natural voice unavailable' +
+    (why ? ' (' + why + ')' : '') + ' \u2014 using the Quick voice.</span>';
+}
+
+async function boot() {
+  // Quick voice needs nothing downloaded, so make it work before anything
+  // that could fail. Browsers fill the voice list late, hence the retries.
+  fillVoices();
+  [200, 800, 2000].forEach(ms => setTimeout(() => {
+    if (engine === 'quick' && !$('voice').options.length) { fillVoices(); }
+  }, ms));
+
   const device = ('gpu' in navigator) ? 'webgpu' : 'wasm';
   $('note').textContent = device === 'webgpu' ? 'WebGPU' : 'WASM (slower)';
+  $('status').textContent = 'Loading the Natural voice\u2026 (Quick voice is ready now)';
+
+  let KokoroTTS;
+  try {
+    ({ KokoroTTS } = await import('https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js'));
+  } catch (err) {
+    fallbackToQuick('library blocked');
+    return;
+  }
 
   try {
     tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
@@ -193,13 +216,7 @@ async function boot() {
       }
     });
   } catch (err) {
-    $('status').innerHTML = '<span class="warn">Natural voice unavailable (' +
-      err.message + '). Switched to the Quick voice.</span>';
-    engine = 'quick';
-    $('engine').value = 'quick';
-    $('prepare').textContent = 'Load text';
-    $('prepare').disabled = false;
-    fillVoices();
+    fallbackToQuick(err && err.message ? err.message.slice(0, 60) : 'download failed');
     return;
   }
 
@@ -209,6 +226,85 @@ async function boot() {
   if (engine === 'local') {
     $('prepare').disabled = false;
     $('status').textContent = 'Ready';
+  }
+}
+
+// RawAudio exposes toBlob in the browser build; fall back to encoding the
+// float samples ourselves if a future version drops it.
+function toBlob(audio) {
+  if (typeof audio.toBlob === 'function') { return audio.toBlob(); }
+  const data = audio.audio, sr = audio.sampling_rate;
+  const buf = new ArrayBuffer(44 + data.length * 2);
+  const view = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) { view.setUint8(o + i, s.charCodeAt(i)); } };
+  str(0, 'RIFF'); view.setUint32(4, 36 + data.length * 2, true); str(8, 'WAVE');
+  str(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true); view.setUint32(24, sr, true);
+  view.setUint32(28, sr * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  str(36, 'data'); view.setUint32(40, data.length * 2, true);
+  for (let i = 0; i < data.length; i++) {
+    const v = Math.max(-1, Math.min(1, data[i]));
+    view.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+  }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+// ---------- cache ----------
+// Keyed per sentence and per voice, so editing one line only regenerates
+// that line, and a sentence reused anywhere else is free.
+const DB_NAME = 'class-reader';
+const STORE = 'audio';
+let dbPromise = null;
+
+function db() {
+  if (dbPromise) { return dbPromise; }
+  dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(STORE)) { req.result.createObjectStore(STORE); }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return dbPromise;
+}
+
+function keyFor(voice, text) {
+  let h = 5381;
+  const s = text.trim();
+  for (let i = 0; i < s.length; i++) { h = ((h * 33) ^ s.charCodeAt(i)) >>> 0; }
+  return voice + '|' + s.length + '|' + h.toString(36);
+}
+
+async function cacheGet(key) {
+  try {
+    const d = await db();
+    return await new Promise((resolve) => {
+      const r = d.transaction(STORE, 'readonly').objectStore(STORE).get(key);
+      r.onsuccess = () => resolve(r.result || null);
+      r.onerror = () => resolve(null);
+    });
+  } catch (e) { return null; }
+}
+
+async function cachePut(key, blob) {
+  try {
+    const d = await db();
+    d.transaction(STORE, 'readwrite').objectStore(STORE).put(blob, key);
+  } catch (e) { /* storage full or unavailable — carry on without caching */ }
+}
+
+async function cacheClear() {
+  try {
+    const d = await db();
+    await new Promise((resolve) => {
+      const r = d.transaction(STORE, 'readwrite').objectStore(STORE).clear();
+      r.onsuccess = resolve;
+      r.onerror = resolve;
+    });
+    $('status').textContent = 'Saved audio cleared';
+  } catch (e) {
+    $('status').textContent = 'Could not clear saved audio';
   }
 }
 
@@ -223,17 +319,33 @@ function fillVoices() {
   sel.textContent = '';
 
   if (engine === 'quick') {
+    // Browsers hand back a jumble, and the one they pick by default is often
+    // the worst of the lot. Rank them so the best sits on top.
+    const score = (v) => {
+      const n = v.name;
+      if (/\bSam\b/i.test(n)) { return -10; }
+      if (/Google US English/i.test(n)) { return 100; }
+      if (/Natural/i.test(n)) { return 95; }
+      if (/Google UK English/i.test(n)) { return 85; }
+      if (/Aria|Jenny|Guy|Michelle|Christopher/i.test(n)) { return 80; }
+      if (/^Google/i.test(n)) { return 70; }
+      if (/Zira|Mark/i.test(n)) { return 50; }
+      if (/David/i.test(n)) { return 40; }
+      return /en-US/i.test(v.lang) ? 30 : 10;
+    };
+
     const list = (window.speechSynthesis ? speechSynthesis.getVoices() : [])
       .filter(v => /^en/i.test(v.lang));
-    list.sort((a, b) => (/en-US/i.test(b.lang) ? 0 : 1) - (/en-US/i.test(a.lang) ? 0 : 1));
+    list.sort((a, b) => score(b) - score(a) || a.name.localeCompare(b.name));
+
     list.forEach(v => {
       const o = document.createElement('option');
       o.value = v.name;
-      o.textContent = v.name.replace(/^Microsoft\s+/, '').replace(/\s*-\s*English.*$/, '');
+      o.textContent = v.name.replace(/^Microsoft\s+/, '').replace(/\s*-\s*English.*$/, '') +
+        (/en-GB/i.test(v.lang) ? ' (UK)' : '');
       sel.appendChild(o);
     });
-    const best = list.find(v => /Google US English/i.test(v.name));
-    if (best) { sel.value = best.name; }
+    if (list.length) { sel.value = list[0].name; }
     $('allVoices').classList.add('hidden');
     sel.disabled = false;
     return;
@@ -466,7 +578,6 @@ function startReading() {
     $('play').disabled = false;
     $('status').textContent = sentences.length + ' sentences ready';
   } else {
-    $('voice').disabled = true;
     $('play').disabled = true;
     prepareLocal();
   }
@@ -554,9 +665,44 @@ $('keepWaiting').onclick = () => { $('banner').classList.add('hidden'); };
 $('allVoices').onclick = () => { showAllVoices = !showAllVoices; fillVoices(); };
 $('clear').onclick = cacheClear;
 
+// Natural voice plays real audio, so the rate applies instantly. Browser
+// speech bakes the rate in when a sentence is queued, so it has to be
+// re-queued from the current position for a change to be heard.
 $('rate').oninput = function () {
   $('rateVal').textContent = parseFloat(this.value).toFixed(1) + 'x';
   player.playbackRate = parseFloat(this.value);
+};
+
+$('rate').onchange = function () {
+  if (engine === 'quick' && playing) { playQuickFrom(idx); }
+};
+
+$('voice').onchange = function () {
+  if (!sentences.length) { return; }
+
+  if (engine === 'quick') {
+    if (playing) { playQuickFrom(idx); }
+    return;
+  }
+
+  // Natural voice: the audio was made with the old voice, so it has to be
+  // regenerated. Anything already cached for the new voice comes back fast.
+  generating = false;
+  playing = false;
+  clearTimeout(slowTimer);
+  player.pause();
+  $('banner').classList.add('hidden');
+  sentences.forEach(s => {
+    if (s.url) { URL.revokeObjectURL(s.url); }
+    s.url = null;
+    s.el.classList.add('pending');
+    s.el.classList.remove('on');
+  });
+  idx = 0;
+  $('play').disabled = true;
+  showButtons({ play: true, pause: false, stop: false });
+  $('status').textContent = 'Switching voice \u2014 regenerating\u2026';
+  prepareLocal();
 };
 $('size').oninput = function () {
   $('sizeVal').textContent = this.value;
